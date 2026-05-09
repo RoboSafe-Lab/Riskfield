@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 from datasets.InD import InD
-from model.MultiTrajFlow import MultiTrajFlow
+from model.RiskFlow import RiskFlow
 from trajflow_config import PRESET_OVERRIDES, set_wandb_defaults, seed_everything
 
 
@@ -167,7 +167,7 @@ if __name__ == "__main__":
 
         # Initialize model
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = MultiTrajFlow(
+        model = RiskFlow(
             seq_len=run.config.seq_len,
             input_dim=run.config.input_dim,
             feature_dim=run.config.feature_dim,
@@ -216,6 +216,6 @@ if __name__ == "__main__":
             wandb.log({"loss": loss})
 
         # Save the model
-        model_name = "multi_trajflow.pt"
+        model_name = "risk_flow.pt"
         torch.save(model.state_dict(), model_name)
         print(f"Model saved as {model_name}")
