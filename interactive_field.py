@@ -430,8 +430,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    from model.MultiTrajFlow import MultiTrajFlow
-    from trajflow_config import preset, seed_everything
+    from model.RiskFlow import RiskFlow
+    from riskflow_config import preset, seed_everything
 
     args = build_arg_parser().parse_args()
 
@@ -466,7 +466,7 @@ def main() -> None:
         obs = ind._get_observation_site([site_id])
     observation_site = obs
 
-    traj_flow = MultiTrajFlow(
+    traj_flow = RiskFlow(
         seq_len=cfg["seq_len"],
         input_dim=cfg["input_dim"],
         feature_dim=cfg["feature_dim"],
