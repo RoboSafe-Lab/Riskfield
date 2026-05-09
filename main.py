@@ -13,7 +13,7 @@ should_serialize = True
 should_evaluate = True
 
 
-last_model_name = "riskflow_ind_2.pt"  # Change this to the desired model name
+last_model_name = "riskflow_ind_0.pt"  # Change this to the desired model name
 
 with wandb.init(group="AFT") as run:
     # Centralized defaults (one place to edit): riskflow_config.py
