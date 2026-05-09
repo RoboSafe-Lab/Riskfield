@@ -1356,9 +1356,9 @@ def visualize(
 
 
 if __name__ == "__main__":
-    from model.MultiTrajFlow import MultiTrajFlow
+    from model.RiskFlow import RiskFlow
 
-    from trajflow_config import preset, seed_everything
+    from riskflow_config import preset, seed_everything
 
     cfg = preset("vis_field")
 
