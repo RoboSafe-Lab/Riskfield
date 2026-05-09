@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 from datasets.InD import InD
 from model.RiskFlow import RiskFlow
-from trajflow_config import PRESET_OVERRIDES, set_wandb_defaults, seed_everything
+from riskflow_config import PRESET_OVERRIDES, set_wandb_defaults, seed_everything
 
 
 def train(observation_site, model, epochs, lr, weight_decay, gamma, verbose, device):
@@ -143,7 +143,7 @@ def train(observation_site, model, epochs, lr, weight_decay, gamma, verbose, dev
 
 if __name__ == "__main__":
     with wandb.init() as run:
-        # Centralized defaults (one place to edit): trajflow_config.py
+        # Centralized defaults (one place to edit): riskflow_config.py
         set_wandb_defaults(run, overrides=PRESET_OVERRIDES["train"])
         seed_everything(run.config.seed)
 
