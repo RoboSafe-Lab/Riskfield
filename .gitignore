@@ -252,3 +252,6 @@ backups/
 *.npz
 *.out
 *.err
+# One-off cluster job scripts: hardcode /users/cw3005/riskfield and a personal
+# conda path, so they are not portable and not useful to anyone else.
+DMOG/
