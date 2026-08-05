@@ -109,6 +109,10 @@ def roughness(p):
     return a.item(), j.item(), cos.mean().item()
 
 
+# The fixed-z codes are drawn from the global RNG, so without this the reported
+# figure moves between runs. It is a paper number: pin it.
+torch.manual_seed(int(os.environ.get("RF_SEED", "0")))
+
 sum_a = sum_j = sum_c = 0.0
 g_a = g_j = g_c = 0.0
 n = 0
