@@ -40,6 +40,13 @@ ckpt = os.environ.get("RF_CKPT", "serialized/riskflow_ind_1.pt")
 uwm = os.environ.get("RF_USE_WORLD_MODEL", "1").strip().lower() in ("1", "true", "yes")
 max_scenes = int(os.environ.get("RF_MAX_SCENES", "1500"))
 R = int(os.environ.get("RF_Z_SAMPLES", "16"))  # fixed-z trajectories per scene
+# use_map MUST match the checkpoint. The ablation family (riskflow_ind_0..6,
+# which the no-world-model control belongs to) was trained without a map
+# encoder; the deployed models (ind_7/ind_8) carry one. RiskFlow defaults
+# use_map=False, so loading ind_8 without this would drop its map weights as
+# merely "unexpected" and measure a model that never sees the road -- silently,
+# since load_state_dict(strict=False) reports nothing. Refused below.
+umap = os.environ.get("RF_USE_MAP", "0").strip().lower() in ("1", "true", "yes")
 
 c = default_dict()
 ind = InD(
@@ -63,8 +70,28 @@ m = RiskFlow(
     use_cnf=c["use_cnf"], use_cgmm=c["use_cgmm"], gmm_modes=c["gmm_modes"],
     use_world_model=uwm, wm_state_dim=c["wm_state_dim"], action_dim=c["action_dim"],
     scene_level=os.environ.get("RF_SCENE_LEVEL", "0").strip().lower() in ("1","true","yes"),
+    use_map=umap, map_size=c["map_size"], map_data_dir="data", map_dataset="ind",
 ).to(dev)
-m.load_state_dict(torch.load(ckpt, map_location=dev), strict=False)
+_res = m.load_state_dict(torch.load(ckpt, map_location=dev), strict=False)
+_missing = list(getattr(_res, "missing_keys", []) or [])
+_unexpected = list(getattr(_res, "unexpected_keys", []) or [])
+# strict=False is deliberate here (the encoder carries both the legacy mha and
+# the scene-level self_attn), but a MAP or WORLD-MODEL mismatch is never benign:
+# it means the built model and the checkpoint disagree about which branches
+# exist, and the un-matched branch runs at its random initialization.
+for _tag, _keys in (("missing from checkpoint", _missing),
+                    ("present in checkpoint but unused", _unexpected)):
+    _bad = [k for k in _keys if "map" in k.lower() or k.startswith("world_model")]
+    if _bad:
+        raise SystemExit(
+            f"ABORT {ckpt}: {len(_bad)} map/world-model params {_tag} "
+            f"(e.g. {_bad[:3]}). Set RF_USE_MAP / RF_USE_WORLD_MODEL to match "
+            f"this checkpoint -- otherwise the measurement is of a partly "
+            f"randomly-initialized model."
+        )
+print(f"loaded {ckpt}: use_world_model={uwm} use_map={umap} "
+      f"({len(_missing)} missing, {len(_unexpected)} unexpected, none structural)",
+      flush=True)
 m.eval()
 
 
