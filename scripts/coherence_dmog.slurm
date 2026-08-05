@@ -50,17 +50,24 @@ export RF_MAX_SCENES="${RF_MAX_SCENES:-1500}"
 export RF_Z_SAMPLES="${RF_Z_SAMPLES:-16}"
 export RF_SEED="${RF_SEED:-0}"
 
-run () {   # run <label> <ckpt> <use_world_model> <use_map>
+run () {   # run <label> <ckpt> <use_world_model> <use_map> [scene_level]
   echo ""
-  echo "######## $1  ($2  UWM=$3 MAP=$4)"
+  echo "######## $1  ($2  UWM=$3 MAP=$4 SCENE=${5:-0})"
+  # Never let one checkpoint's mismatch abort the rest (set -e is on).
   RF_CKPT="serialized/$2" RF_USE_WORLD_MODEL="$3" RF_USE_MAP="$4" \
-    python scripts/coherence_metric.py
+  RF_SCENE_LEVEL="${5:-0}" python scripts/coherence_metric.py \
+    || echo "SKIPPED $1 -- see the ABORT line above"
 }
 
 run "no world model (per-step independent)" riskflow_ind_2.pt 0 0
-run "naive world model"                     riskflow_ind_1.pt 1 0
 run "residual world model"                  riskflow_ind_5.pt 1 0
+run "multi-agent action-cond. (ablation ours)" riskflow_ind_6.pt 1 0 1
 run "deployed ego model (+map)"             riskflow_ind_8.pt 1 1
+
+# NOT measurable: riskflow_ind_0/ind_1 (naive world model). Those predate the
+# residual head, so the current WorldModel has 8 world_model.residual.* params
+# the checkpoint cannot fill; loading anyway would measure a partly random
+# model. The guard in coherence_metric.py refuses it.
 
 echo ""
 echo "COHERENCE DONE -- compare the GAP accel_ratio lines across the four blocks."
