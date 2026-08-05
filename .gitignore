@@ -238,3 +238,17 @@ datasets/AD4CHE/
 # Rendered animations (~190 MB of .gif); regenerate with scripts/animate_*.py
 gifs/
 probe_view/
+
+# Other dataset roots (datasets/registry.py resolves these; data/ is above).
+# Raw drone data is downloaded from the providers, never committed.
+data_round/
+data_ad4che/
+# Trained checkpoints (*.pt already ignored; keep the directory out too)
+serialized/
+backups/
+# Runtime artifacts written into the project root:
+#   conflict_labels*.npz / conflict_scores*.npz  (conflict_labels.py, eval_conflict.py)
+#   %x-%j.out / .err                             (slurm)
+*.npz
+*.out
+*.err

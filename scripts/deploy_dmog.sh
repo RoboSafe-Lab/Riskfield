@@ -16,7 +16,13 @@ SCP="scp -F none -o BatchMode=yes -i ${KEY}"
 
 push_code() {
   echo ">> packing code (excluding dataset/caches)"
-  tar --exclude='datasets/inD' --exclude='**/__pycache__' --exclude='*.pt' \
+  # Every locally-downloaded dataset and rendered output must be excluded, or a
+  # "fast code push" silently uploads gigabytes: datasets/AD4CHE alone is 5.2 GB
+  # of tracks CSVs, and gifs/ + probe_view/ add ~190 MB of rendered animations.
+  # Data reaches the cluster via push_data (-> ~/riskfield/data), never this tar.
+  tar --exclude='datasets/inD' --exclude='datasets/AD4CHE' \
+      --exclude='gifs' --exclude='probe_view' \
+      --exclude='**/__pycache__' --exclude='*.pt' \
       --exclude='videos' --exclude='wandb' --exclude='.git' \
       -czf /tmp/riskfield_code.tgz .
   $SSH "mkdir -p ~/${REMOTE}"
