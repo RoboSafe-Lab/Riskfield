@@ -230,3 +230,11 @@ wandb/
 data/
 
 .vscode/
+# --- project data & rendered outputs (kept out of git) ---
+# Raw drone datasets: ~1.8 GB (inD) + ~5.2 GB (AD4CHE) of tracks CSVs and
+# background photos. Re-downloaded from the dataset providers, never committed.
+datasets/inD/
+datasets/AD4CHE/
+# Rendered animations (~190 MB of .gif); regenerate with scripts/animate_*.py
+gifs/
+probe_view/

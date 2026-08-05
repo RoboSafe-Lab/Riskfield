@@ -1,0 +1,18 @@
+{
+  "checkpoint": "serialized/riskflow_ind_5.pt",
+  "grid_S": 64,
+  "per_scene_samples": 2000,
+  "scenes_used": 6000,
+  "scenes_skipped": 269,
+  "scenes_total": 71000,
+  "pool_size": 12000000,
+  "p95": 1.326e-07,
+  "p99": 0.03454,
+  "p99_9": 4.301,
+  "max": 2567.0,
+  "vmax_recommended": 4.301,
+  "vmax_recommended_pct": "p99_9",
+  "vmax_p99": 0.0345,
+  "calibration_note": "Time-limited at 6000/71000 scenes; p99 drift <1% per 250 scenes over the last 1.25k scenes -- converged. Reachability gate (P_j > 1% of step peak) applied to remove velocity-field extrapolation in density tails. vmax_recommended set to p99.9 (not p99) because the per-cell distribution is heavy-tailed: p99 saturated the whole ego corridor in active scenes; p99.9 corresponds to the typical per-scene maximum, leaving inter-cell gradient visible inside high-risk scenes.",
+  "source_log": "rf-calib-334986.out"
+}

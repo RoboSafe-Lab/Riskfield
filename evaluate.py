@@ -76,12 +76,18 @@ def evaluate(observation_site, model, num_samples, device):
                 test_input, test_feature, test_target.shape[1], test_type, num_samples
             )
 
-            # Denormalize targets and samples
+            # Denormalize targets and samples using THIS sample's location box.
+            # test_batch_size==1, so the batch is a single sample/location.
+            if "locationId" in batch:
+                loc = int(batch["locationId"].view(-1)[0].item())
+                denorm = lambda a: observation_site.denormalize_loc(a, loc)
+            else:
+                denorm = observation_site.denormalize
             test_target = torch.tensor(
-                observation_site.denormalize(test_target.cpu().numpy())
+                denorm(test_target.cpu().numpy())
             ).to(device)
             samples = torch.tensor(
-                observation_site.denormalize(samples.cpu().numpy())
+                denorm(samples.cpu().numpy())
             ).to(device)
 
             # Compute metrics

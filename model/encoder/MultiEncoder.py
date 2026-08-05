@@ -1,25 +1,29 @@
+"""Multi-agent encoder.
+
+Two output modes are supported (selected at call time, not construction time):
+
+- **Scene-level** (``per_agent=True``): symmetric self-attention over all
+  agents produces a contextualized embedding *for every agent*, plus a
+  per-sample agent-validity mask. The learned ``ego_identity`` vector is
+  added to index-0 (the ego) before attention so downstream modules (world
+  model, AR decoder) can correlate the ego-action conditioning with the
+  right agent.
+
+- **Single-target** (``per_agent=False``): ego-as-Query, others-as-Key/Value
+  cross-attention, returning a single (B, E) context vector. This is the
+  original behaviour kept for backward compatibility with ``evaluate.py``
+  and pre-scene-level checkpoints.
+
+The GRU per-car histories and FiLM vehicle-type modulation are shared
+between both modes.
+"""
+
 import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pack_padded_sequence
-from typing import Optional
 
 
 class MultiEncoder(nn.Module):
-    """
-    Multi-car discrete encoder.
-    forward(t, x):
-      - t: placeholder if we need to implement a ContinuousEncoder interface.
-      - x: tensor of shape (batch, num_cars, seq_len, feat_dim)
-           feat_dim already includes any per-step features (pos + extras).
-      - v_type: tensor of shape (batch, num_cars) with vehicle type IDs.
-    Returns:
-      - embedding: (batch, embedding_dim)
-    Behavior:
-      - For each car do a GRU over time (time appended as extra channel).
-      - Use MultiheadAttention so ego (index 0) attends to other cars.
-      - Project concatenated (ego, attended) to embedding_dim.
-    """
-
     def __init__(
         self,
         input_dim: int = 8,
@@ -33,7 +37,6 @@ class MultiEncoder(nn.Module):
         num_vehicle_types: int = 5,
     ):
         super(MultiEncoder, self).__init__()
-        # NOTE: InD dataset already appends a time channel to features.
         self.gru = nn.GRU(
             input_size=input_dim,
             hidden_size=hidden_dim,
@@ -47,8 +50,7 @@ class MultiEncoder(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim * 2),
         )
-
-        # Initialize FiLM generator last layer to zeros
+        # FiLM generator last layer zero-init so identity at start.
         nn.init.zeros_(self.film_gen[-1].weight)
         nn.init.zeros_(self.film_gen[-1].bias)
 
@@ -57,118 +59,109 @@ class MultiEncoder(nn.Module):
         self.hidden_dim = hidden_dim
         self.embedding_dim = embedding_dim
 
-        # cross-attention: ego queries others
-        self.mha = nn.MultiheadAttention(
-            embed_dim=hidden_dim, num_heads=n_heads, batch_first=True, dropout=dropout
+        # Scene-level path: learned ego identity vector + symmetric self-attn.
+        self.ego_identity = nn.Parameter(torch.zeros(hidden_dim))
+        nn.init.normal_(self.ego_identity, std=0.02)
+        self.self_attn = nn.MultiheadAttention(
+            embed_dim=hidden_dim, num_heads=n_heads,
+            batch_first=True, dropout=dropout,
+        )
+        self.per_agent_proj = nn.Sequential(
+            nn.Linear(hidden_dim, embedding_dim),
+            nn.ReLU(inplace=True),
+            nn.Linear(embedding_dim, embedding_dim),
         )
 
-        # projection from [ego_hidden, attn_hidden] -> embedding_dim
+        # Legacy single-target path: ego-Q / others-KV cross-attention.
+        self.mha = nn.MultiheadAttention(
+            embed_dim=hidden_dim, num_heads=n_heads,
+            batch_first=True, dropout=dropout,
+        )
         self.proj = nn.Sequential(
             nn.Linear(2 * hidden_dim, embedding_dim),
             nn.ReLU(inplace=True),
             nn.Linear(embedding_dim, embedding_dim),
         )
 
-    def forward(
-        self, t: torch.Tensor, x: torch.Tensor, v_type: torch.Tensor
-    ) -> torch.Tensor:
-        """
-        t: (seq_len,) tensor (device will follow x) -- kept for API compat but NOT used
-        x: (batch, num_cars, seq_len, feat_dim)  # feat_dim already includes time if dataset added it
-        returns: (batch, embedding_dim)
-        """
+    def _encode_histories(self, x):
+        """Shared GRU+FiLM stage. Returns (per_car, car_valid)."""
         assert x.ndim == 4, "x must be (batch, num_cars, seq_len, feat_dim)"
-        batch, num_cars, seq_len, feat_dim = x.shape
+        batch, num_cars, seq_len, _ = x.shape
         assert (num_cars == self.max_num_cars) and (seq_len == self.seq_len), (
-            f"Expected input shape (batch, {self.max_num_cars}, {self.seq_len}, feat_dim), "
-            f"but got (batch, {num_cars}, {seq_len}, {feat_dim})"
+            f"Expected (batch, {self.max_num_cars}, {self.seq_len}, feat); "
+            f"got {tuple(x.shape)}"
         )
-        device = x.device
+        x_flat = x.contiguous().view(batch * num_cars, seq_len, -1)
 
-        ## 1. GRU per car ##
-        # flatten cars: (batch*num_cars, seq_len, feat_dim)
-        x_flat = x.contiguous().view(batch * num_cars, seq_len, feat_dim)
-
-        # compute valid lengths per car from NaNs: consider a time-step valid only if all features are not NaN
-        time_valid = ~torch.isnan(x_flat).any(dim=-1)  # (batch*num_cars, seq_len) bool
-        lengths = time_valid.sum(dim=1).to(torch.long)  # (batch*num_cars,)
-
-        # replace NaNs with 0 before feeding to GRU (so pack/GRU won't propagate NaN)
+        time_valid = ~torch.isnan(x_flat).any(dim=-1)
+        lengths = time_valid.sum(dim=1).to(torch.long)
         x_filled = x_flat.clone()
         x_filled[torch.isnan(x_filled)] = 0.0
 
-        # NOTE: Do NOT append t here because datloader already adds a time channel.
-        gru_input = x_filled  # (batch*num_cars, seq_len, feat_dim)
-
-        # ensure at least length 1 for pack (pack doesn't accept zero-length). invalid sequences will be masked later.
         lengths_clamped = lengths.clone()
         lengths_clamped[lengths_clamped == 0] = 1
-
-        # sort by length desc for pack_padded_sequence
         lengths_sorted, sort_idx = torch.sort(lengths_clamped, descending=True)
         unsort_idx = sort_idx.argsort()
-        gru_input_sorted = gru_input[sort_idx]
+        x_sorted = x_filled[sort_idx]
 
         packed = pack_padded_sequence(
-            gru_input_sorted,
-            lengths_sorted.cpu(),
-            batch_first=True,
-            enforce_sorted=True,
+            x_sorted, lengths_sorted.cpu(), batch_first=True, enforce_sorted=True,
         )
-        _, h_n = self.gru(packed)  # h_n: (num_layers, batch_sorted, hidden_dim)
-        h_last = h_n[-1]  # (batch_sorted, hidden_dim)
-        # unsort back to original order
-        h_last = h_last[unsort_idx]
-
-        # reshape per-car embeddings: (batch, num_cars, hidden_dim)
+        _, h_n = self.gru(packed)
+        h_last = h_n[-1][unsort_idx]
         per_car = h_last.view(batch, num_cars, self.hidden_dim)
+        car_valid = (lengths.view(batch, num_cars) > 0)
+        return per_car, car_valid
 
-        ## 2. FiLM modulation ##
-        # print(f"t_emb max index: {v_type.max()}") 
-        t_emb = self.type_emb(v_type)  # (B, N, 32)
-        film_params = self.film_gen(t_emb)  # (B, N, hidden_dim*2)
-        gamma, beta = torch.chunk(film_params, 2, dim=-1)  # (B, N, hidden_dim) each
+    def _film(self, per_car, v_type):
+        t_emb = self.type_emb(v_type)            # (B,N,32)
+        gamma, beta = torch.chunk(self.film_gen(t_emb), 2, dim=-1)
+        return (1 + gamma) * per_car + beta
 
-        per_car = (1 + gamma) * per_car + beta  # FiLM modulation
+    def forward(self, t, x, v_type, per_agent=False):
+        """
+        x: (B, N, T, F).  Returns:
+          per_agent=False -> (embedding: (B, E),  car_valid: (B, N))
+          per_agent=True  -> (embedding: (B, N, E), car_valid: (B, N))
+        """
+        per_car, car_valid = self._encode_histories(x)
+        per_car = self._film(per_car, v_type)
+        device = per_car.device
+        batch, num_cars, _ = per_car.shape
 
-        ## 3. Cross-car attention ##
-        # car-level valid mask: a car is valid if its original length>0
-        car_valid = lengths.view(batch, num_cars) > 0  # (batch, num_cars) bool
+        if per_agent:
+            # Add learned ego-identity to position 0 so attention is
+            # symmetric over agents but the ego is identifiable.
+            ego_mark = torch.zeros_like(per_car)
+            ego_mark[:, 0, :] = self.ego_identity
+            tokens = per_car + ego_mark
 
-        # ego embedding (index 0)
-        ego = per_car[:, 0:1, :]  # (batch, 1, hidden_dim)
+            # Self-attention over agents; mask invalid positions.
+            kpm = ~car_valid                          # True = ignore
+            # If a row is fully invalid, give it one "false" entry to avoid
+            # NaN; the row's downstream use is masked anyway via car_valid.
+            safe_kpm = kpm.clone()
+            full_row = safe_kpm.all(dim=1)
+            safe_kpm[full_row, 0] = False
+            attn_out, _ = self.self_attn(
+                tokens, tokens, tokens, key_padding_mask=safe_kpm,
+            )
+            return self.per_agent_proj(attn_out), car_valid
 
-        # if there are other cars, attend
+        # ---- legacy single-target path ----
+        ego = per_car[:, 0:1, :]                       # (B, 1, hidden)
         if num_cars > 1:
-            others = per_car[:, 1:, :]  # (batch, num_cars-1, hidden_dim)
-            # key_padding_mask: True for positions that should be ignored -> invalid cars should be True
-            key_padding_mask = ~car_valid[:, 1:]  # (batch, num_cars-1)
-            ##
-            full_masked_rows = key_padding_mask.all(dim=1) # (batch,)
-            safe_mask = key_padding_mask.clone()
-            safe_mask[full_masked_rows, 0] = False
-            ##
-            # MultiheadAttention requires float tensors; queries/keys/values are (batch, seq, embed)
-            # If all other cars are invalid for a batch row, MHA will return zeros — that's acceptable.
-            attn_out, _ = self.mha(
-                ego, others, others, key_padding_mask=safe_mask
-            )
-            if torch.isnan(attn_out).any():
-                print("MHA produced NaN!")
-                print("Mask sums per row:", safe_mask.sum(dim=1))
-
-            # attn_out: (batch, 1, hidden_dim)
-            combined = torch.cat([ego, attn_out], dim=-1).squeeze(
-                1
-            )  # (batch, 2*hidden_dim)
+            others = per_car[:, 1:, :]
+            kpm = ~car_valid[:, 1:]
+            full_row = kpm.all(dim=1)
+            safe_kpm = kpm.clone()
+            safe_kpm[full_row, 0] = False
+            attn_out, _ = self.mha(ego, others, others, key_padding_mask=safe_kpm)
+            combined = torch.cat([ego, attn_out], dim=-1).squeeze(1)
         else:
-            # no other cars -> pad attn with zeros
-            zero_attn = torch.zeros(
-                batch, self.hidden_dim, device=device, dtype=per_car.dtype
-            )
             combined = torch.cat(
-                [ego.squeeze(1), zero_attn], dim=-1
-            )  # (batch, 2*hidden_dim)
-
-        embedding = self.proj(combined)  # (batch, embedding_dim)
-        return embedding
+                [ego.squeeze(1),
+                 torch.zeros(batch, self.hidden_dim, device=device, dtype=per_car.dtype)],
+                dim=-1,
+            )
+        return self.proj(combined), car_valid

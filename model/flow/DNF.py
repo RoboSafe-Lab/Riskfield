@@ -93,7 +93,18 @@ class AffineCouplingLayer(nn.Module):
 
     def forward(self, x, y, sampling_frequency, frame_indices=None):
         mx = x * self.mask
-        y = y.unsqueeze(1).expand(-1, mx.shape[1], -1)
+        # y is the conditioning signal. Two supported shapes:
+        #   (B, E)      -> single context vector, broadcast over frames
+        #                  (original / backward-compatible behavior)
+        #   (B, T, E)   -> per-frame condition from the world-model rollout
+        #                  (temporally coherent conditioning)
+        if y.dim() == 3:
+            if y.shape[1] != mx.shape[1]:
+                raise ValueError(
+                    f"per-frame condition has {y.shape[1]} steps but flow has {mx.shape[1]}"
+                )
+        else:
+            y = y.unsqueeze(1).expand(-1, mx.shape[1], -1)
 
         if frame_indices is None:
             index = torch.cumsum(torch.ones_like(x)[:, :, 0], 1).unsqueeze(-1)
@@ -116,7 +127,13 @@ class AffineCouplingLayer(nn.Module):
 
     def inverse(self, u, y, sampling_frequency, frame_indices=None):
         mu = u * self.mask
-        y = y.unsqueeze(1).expand(-1, mu.shape[1], -1)
+        if y.dim() == 3:
+            if y.shape[1] != mu.shape[1]:
+                raise ValueError(
+                    f"per-frame condition has {y.shape[1]} steps but flow has {mu.shape[1]}"
+                )
+        else:
+            y = y.unsqueeze(1).expand(-1, mu.shape[1], -1)
 
         if frame_indices is None:
             index = torch.cumsum(torch.ones_like(u)[:, :, 0], 1).unsqueeze(-1)

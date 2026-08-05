@@ -21,8 +21,31 @@ with wandb.init(group="AFT") as run:
     seed_everything(run.config.seed)
     verbose = bool(run.config.verbose)
 
-    ind = InD(
-        root="data",
+    # Env overrides (for ablations / scripted runs without editing config):
+    #   RF_USE_WORLD_MODEL=0/1   RF_SITE_SCOPE=all|08|loc1..loc4
+    _uwm = bool(getattr(run.config, "use_world_model", False))
+    if "RF_USE_WORLD_MODEL" in os.environ:
+        _uwm = os.environ["RF_USE_WORLD_MODEL"].strip().lower() in ("1", "true", "yes")
+    _scope = os.environ.get("RF_SITE_SCOPE", getattr(run.config, "site_scope", "08"))
+    # RF_SCENE_LEVEL=0 forces the single-target (per-agent marginal) path used
+    # by the risk field; RF_SCENE_LEVEL=1 the autoregressive joint. Defaults to
+    # the config value when unset.
+    _scene = bool(getattr(run.config, "scene_level", False))
+    if "RF_SCENE_LEVEL" in os.environ:
+        _scene = os.environ["RF_SCENE_LEVEL"].strip().lower() in ("1", "true", "yes")
+    _map_local = bool(getattr(run.config, "map_local", False))
+    if "RF_MAP_LOCAL" in os.environ:
+        _map_local = os.environ["RF_MAP_LOCAL"].strip().lower() in ("1", "true", "yes")
+    _epochs = int(os.environ.get("RF_EPOCHS", getattr(run.config, "training_epochs", 50)))
+    print(f"[run config] use_world_model={_uwm} site_scope={_scope} scene_level={_scene}")
+    wandb.log({"cfg/use_world_model": int(_uwm), "cfg/site_scope": str(_scope),
+               "cfg/scene_level": int(_scene)})
+
+    from datasets.registry import get_dataset
+    _reg = get_dataset(os.environ.get("RF_DATASET", getattr(run.config, "dataset", "ind")))
+    print(f"[run config] dataset={_reg['name']}")
+    ind = _reg["LoaderClass"](
+        root=_reg["root"],
         max_samples=run.config.maximum_samples,
         train_ratio=run.config.train_ratio,
         train_batch_size=run.config.train_batch_size,
@@ -36,7 +59,7 @@ with wandb.init(group="AFT") as run:
         should_shuffle=run.config.should_shuffle,
         include_future=run.config.include_future,
     )
-    observation_site = ind.observation_site_08
+    observation_site = ind.observation_site_by_scope(_scope)
 
     # Initialize model
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -58,6 +81,18 @@ with wandb.init(group="AFT") as run:
         use_cnf=run.config.use_cnf,
         use_cgmm=run.config.use_cgmm,
         gmm_modes=run.config.gmm_modes,
+        use_world_model=_uwm,
+        wm_state_dim=getattr(run.config, "wm_state_dim", 256),
+        action_dim=getattr(run.config, "action_dim", 2),
+        scene_level=_scene,
+        agent_ordering=getattr(run.config, "agent_ordering", "nearest_ego"),
+        use_map=getattr(run.config, "use_map", False),
+        map_size=getattr(run.config, "map_size", 64),
+        map_data_dir=_reg["map_data_dir"],
+        map_dataset=_reg["map_dataset"],
+        map_local=_map_local,
+        map_crop_m=getattr(run.config, "map_crop_m", 40.0),
+        map_raster_res=getattr(run.config, "map_raster_res", 192),
     ).to(device)
 
     num_parameters = sum(p.numel() for p in traj_flow.parameters() if p.requires_grad)
@@ -71,7 +106,7 @@ with wandb.init(group="AFT") as run:
         total_loss = train(
             observation_site=observation_site,
             model=traj_flow,
-            epochs=run.config.training_epochs,
+            epochs=_epochs,
             lr=run.config.lr,
             weight_decay=run.config.weight_decay,
             gamma=run.config.gamma,
@@ -119,6 +154,15 @@ with wandb.init(group="AFT") as run:
             ):
                 num += 1
             model_name = f"riskflow_ind_{num}.pt"
+            _mc = "_mc" if _map_local else ""    # map-crop variant -> distinct name, keep baseline
+            if _reg["name"] == "ad4che":
+                # deterministic distinct names -> no race between concurrent runs
+                model_name = f"riskflow_ad4che_{'joint' if _scene else 'ego'}{_mc}.pt"
+            elif _reg["name"] == "round":
+                model_name = f"riskflow_round_{'joint' if _scene else 'ego'}{_mc}.pt"
+            elif _reg["name"] == "ind" and _map_local:
+                # InD convention: ego=ind_8, joint=ind_7 (matches RF_CKPT defaults)
+                model_name = f"riskflow_ind_{'7' if _scene else '8'}_mc.pt"
             torch.save(traj_flow.state_dict(), os.path.join(serialize_dir, model_name))
         else:
             model_name = last_model_name

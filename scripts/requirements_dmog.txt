@@ -1,0 +1,8 @@
+# Runtime deps for training/eval on DMOG (CNF/visualization extras included).
+# torch is installed separately from the cu121 wheel index in the env-setup step.
+numpy
+pandas
+matplotlib
+tqdm
+wandb
+torchdiffeq

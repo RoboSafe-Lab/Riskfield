@@ -24,6 +24,10 @@ class TrajFlowDefaults:
     # seed: int = 43
 
     # Dataset
+    # Which InD recordings to use: "08" (single site, original),
+    # "all" (all 33 recordings, per-location normalization),
+    # or "loc1".."loc4" (one intersection).
+    site_scope: str = "all"
     sampling_step: int = 2
     maximum_samples: int = 10000
     # maximum_samples: int = 20000
@@ -49,6 +53,47 @@ class TrajFlowDefaults:
     num_heads: int = 16
     dropout: float = 0.1
     norm_rotate: bool = False
+
+    # World model (deterministic latent rollout that conditions the flow).
+    # When True, the flow is conditioned on a per-frame rolled-out state
+    # instead of a single context vector + raw frame index, making the risk
+    # tensor temporally coherent. Set False to reproduce the conference model.
+    use_world_model: bool = True
+    wm_state_dim: int = 256
+    action_dim: int = 2
+    # Weight of the auxiliary next-position loss that forces the world-model
+    # rollout to be predictive (0 disables it). Only active with the world
+    # model enabled.
+    wm_dyn_lambda: float = 5.0
+    # Action-conditioned training: with this probability a training step
+    # conditions the world model on the ego's realized future-acceleration
+    # proxy; the rest stay autonomous, so both paths are trained.
+    wm_action_dropout: float = 0.5
+    wm_action_scale: float = 100.0
+    # Multi-agent training redesign: each training sample predicts a NEIGHBOR's
+    # future positions (index-rotated to slot 0) while conditioning on the
+    # EGO's action proxy. Matches the counterfactual query at inference
+    # ("others react to my plan").
+    wm_multi_agent: bool = False
+    # Scene-level autoregressive joint: predict ALL agents' futures jointly
+    # via chain rule p(Y1..YN | scene, ego_action) = product p(Yi | Y_<i, ...),
+    # with the world-model scene state rolled by the ego action. Supersedes
+    # the simpler single-target neighbor rotation when enabled.
+    scene_level: bool = True
+    agent_ordering: str = "nearest_ego"
+
+    # Map conditioning: per-location BEV raster of the drone orthophoto, encoded
+    # and added to the agent embeddings so predictions follow the road geometry
+    # (reduces predictive uncertainty / spread).
+    use_map: bool = True
+    map_size: int = 64
+    # map_local=True -> per-agent LOCAL heading-agnostic map crops (a `map_crop_m`
+    # metre window of the location raster centred on each agent), instead of one
+    # per-location vector. Localizes predictions to the road around each agent
+    # (fixes the diffuse occupancy on curved geometry). Toggle via RF_MAP_LOCAL.
+    map_local: bool = False
+    map_crop_m: float = 40.0
+    map_raster_res: int = 192
 
     # Flow
     use_cnf: bool = False
@@ -107,24 +152,31 @@ PRESET_OVERRIDES: dict[str, dict[str, Any]] = {
         "test_batch_size": 1,
     },
 
-    # visualize_px.py historically used a CNF model and slightly different class/empty-frame params
+    # visualize_px.py historically used a CNF model and slightly different class/empty-frame params.
+    # CNF is incompatible with the world model, so it is force-disabled here.
     "vis_px": {
         "use_cnf": True,
         "use_cgmm": False,
+        "use_world_model": False,
         "num_classes": 3,
         "max_empty_frames": 25,
         "flow_hidden_dim": 128,
         "should_shuffle": False,
     },
 
-    # visualize_field.py uses deterministic ordering for index-based selection
+    # visualize_field.py uses deterministic ordering for index-based selection.
+    # Default off so previously serialized (pre-world-model) checkpoints still
+    # load; flip to True once a world-model checkpoint is trained.
     "vis_field": {
         "should_shuffle": False,
+        "use_world_model": False,
     },
 
-    # script-like tests typically want deterministic ordering
+    # script-like tests typically want deterministic ordering, and usually load
+    # existing checkpoints, so keep the world model off unless explicitly set.
     "test": {
         "should_shuffle": False,
+        "use_world_model": False,
     },
 }
 
