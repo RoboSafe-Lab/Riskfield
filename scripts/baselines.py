@@ -15,7 +15,10 @@ methods (Ours / PORA-style) use the model's predicted future densities.
 
 import numpy as np
 
-DT = 0.08
+# NOTE: no DT here on purpose. Both baselines act on present-state velocities in
+# m/s that the CALLER computes and passes in, so the frame interval belongs to the
+# caller (see eval_conflict.py's RF_DT). A module-level DT here was dead and only
+# invited someone to divide by it twice.
 EPS = 1e-6
 
 

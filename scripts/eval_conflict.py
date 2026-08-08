@@ -31,7 +31,15 @@ SDIMS = (JointRiskField.load_scene_dims(os.environ["RF_DIMS"])
          if os.environ.get("RF_DIMS") else None)   # recorded per-agent dims sidecar
 from scripts.baselines import ttc_score, dsf_score, pora_style_score, ours_peak
 
-DT = 0.08
+# Frame interval AFTER sampling_step=2: InD/rounD 2/25 = 0.08 s, AD4CHE 2/30 =
+# 0.0667 s. This was hardcoded to 0.08, which silently (a) inflated every AD4CHE
+# early-warning lead by 0.08/0.0667 = 1.2x, and (b) made the present-state
+# velocities handed to ttc_score/dsf_score 20% too small on AD4CHE. TTC survives
+# that (a uniform velocity rescale is monotone in -d.d/d.v, so the ranking and
+# hence AUROC/AP are unchanged except where tau_cap clips), but DSF does not:
+# (1/dist^2)*exp(beta*closing) mixes an unscaled distance term with a scaled
+# velocity term, so its ranking really does move.
+DT = float(os.environ.get("RF_DT", "0.08"))
 S = int(os.environ.get("RF_GRID", "48"))
 MAX_SCENES = int(os.environ.get("RF_MAX_SCENES", "0"))
 STRIDE = int(os.environ.get("RF_STRIDE", "20"))
@@ -96,7 +104,12 @@ def main():
 
     sidx = []; sc = {m: [] for m in METHODS}; prof = {m: [] for m in PROFILE}
     n = 0
-    CACHE = f"conflict_scores_{os.environ.get('RF_DATASET','ind')}_s{STRIDE}_g{S}{('_mc%d' % MC_N) if MC_N else ''}{'_mps' if MP_SMOOTH else ''}{'_es' if ESWEEP else ''}.npz"
+    # DT belongs in the key: it sets the present-state velocities handed to
+    # ttc_score/dsf_score, so scores cached under a different frame interval are
+    # NOT interchangeable. Without this, re-running AD4CHE with the corrected
+    # RF_DT=0.0667 would silently reload the DT=0.08 scores and report them as
+    # the fix.
+    CACHE = f"conflict_scores_{os.environ.get('RF_DATASET','ind')}_s{STRIDE}_g{S}_dt{DT:g}{('_mc%d' % MC_N) if MC_N else ''}{'_mps' if MP_SMOOTH else ''}{'_es' if ESWEEP else ''}.npz"
     if os.environ.get("RF_USE_SCORE_CACHE", "1") != "0" and os.path.exists(CACHE):
         z = np.load(CACHE)
         sidx = z["sidx"]; sc = {m: list(z[m]) for m in METHODS}
