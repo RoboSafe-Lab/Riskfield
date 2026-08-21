@@ -14,7 +14,8 @@ Methods (higher=riskier):
 Metrics: AUROC, AP (numpy), early-warning lead time. Output: conflict_eval.json,
 scores cached in conflict_scores.npz.
 
-Env: RF_LABEL_FILES (comma-sep npz), RF_GRID (48), RF_STRIDE (20), RF_MAX_SCENES.
+Env: RF_LABEL_FILES (comma-sep npz), RF_GRID (48), RF_STRIDE (20), RF_MAX_SCENES,
+     RF_DT (frame interval; defaults per dataset).
 """
 
 import os, sys, json
@@ -39,7 +40,11 @@ from scripts.baselines import ttc_score, dsf_score, pora_style_score, ours_peak
 # hence AUROC/AP are unchanged except where tau_cap clips), but DSF does not:
 # (1/dist^2)*exp(beta*closing) mixes an unscaled distance term with a scaled
 # velocity term, so its ranking really does move.
-DT = float(os.environ.get("RF_DT", "0.08"))
+# Default follows the dataset rather than a constant: AD4CHE records at 30 Hz
+# (2/30 = 0.0667 s after sampling_step=2), InD and rounD at 25 Hz (0.08 s).
+# A blind 0.08 default is what produced the 1.2x-inflated AD4CHE lead times,
+# and the runners that set RF_DT explicitly are no longer in the repo.
+DT = float(os.environ.get("RF_DT", "0.0667" if _reg["name"] == "ad4che" else "0.08"))
 S = int(os.environ.get("RF_GRID", "48"))
 MAX_SCENES = int(os.environ.get("RF_MAX_SCENES", "0"))
 STRIDE = int(os.environ.get("RF_STRIDE", "20"))
@@ -96,6 +101,14 @@ def main():
     site = ind.observation_site_by_scope("all")
     ckpt_ego = os.environ.get("RF_CKPT_EGO", "serialized/riskflow_ind_8.pt")
     ckpt_joint = os.environ.get("RF_CKPT_JOINT", "serialized/riskflow_ind_7.pt")
+    # The filename key covers dataset/stride/grid/DT, but ours|ours_prob|pora also
+    # depend on the checkpoints, the dims sidecar, map_local and joint_field's
+    # velocity/severity settings. Swapping only a checkpoint (e.g. the ind_2
+    # no-world-model ablation) would otherwise hit the same filename and silently
+    # report the deployed model's scores as the ablation's.
+    _ident = "|".join([f"ego={ckpt_ego}", f"joint={ckpt_joint}"] +
+                      [f"{k}={os.environ.get(k, '')}" for k in
+                       ("RF_DIMS", "RF_MAP_LOCAL", "RF_VMETHOD", "RF_PDEG", "RF_SEV", "RF_LOG")])
     me = build(False).to(dev).eval(); me.load_state_dict(torch.load(ckpt_ego, map_location=dev), strict=False)
     mj = build(True).to(dev).eval();  mj.load_state_dict(torch.load(ckpt_joint, map_location=dev), strict=False)
     g1 = torch.linspace(0.05, 0.95, S); GX, GY = torch.meshgrid(g1, g1, indexing="ij")
@@ -110,12 +123,19 @@ def main():
     # RF_DT=0.0667 would silently reload the DT=0.08 scores and report them as
     # the fix.
     CACHE = f"conflict_scores_{os.environ.get('RF_DATASET','ind')}_s{STRIDE}_g{S}_dt{DT:g}{('_mc%d' % MC_N) if MC_N else ''}{'_mps' if MP_SMOOTH else ''}{'_es' if ESWEEP else ''}.npz"
+    _cache_ok = False
     if os.environ.get("RF_USE_SCORE_CACHE", "1") != "0" and os.path.exists(CACHE):
-        z = np.load(CACHE)
-        sidx = z["sidx"]; sc = {m: list(z[m]) for m in METHODS}
-        prof = {m: list(z["prof_" + m]) for m in PROFILE}; n = len(sidx)
-        print(f"RESULT loaded cached scores n={n} from {CACHE} (label-independent)", flush=True)
-    else:
+        z = np.load(CACHE, allow_pickle=True)
+        _was = str(z["ident"]) if "ident" in z.files else "<legacy cache: no identity recorded>"
+        if _was == _ident:
+            sidx = z["sidx"]; sc = {m: list(z[m]) for m in METHODS}
+            prof = {m: list(z["prof_" + m]) for m in PROFILE}; n = len(sidx)
+            _cache_ok = True
+            print(f"RESULT loaded cached scores n={n} from {CACHE} (label-independent)", flush=True)
+        else:
+            print(f"RESULT [cache] REFUSED {CACHE} -- rescoring."
+                  f" cached=[{_was}] current=[{_ident}]", flush=True)
+    if not _cache_ok:
       with torch.no_grad():
         for i, b in enumerate(site.test_loader):
             if STRIDE > 1 and (i % STRIDE) != 0: continue
@@ -159,7 +179,7 @@ def main():
             sidx.append(i); n += 1
             if MAX_SCENES and n >= MAX_SCENES: break
     sidx = np.array(sidx)
-    np.savez(CACHE, sidx=sidx, **{m: np.array(sc[m]) for m in METHODS},
+    np.savez(CACHE, sidx=sidx, ident=np.array(_ident), **{m: np.array(sc[m]) for m in METHODS},
              **{"prof_"+m: np.array(prof[m]) for m in PROFILE})
     print(f"RESULT scored n={n} scenes (grid={S}) -> cached {CACHE}", flush=True)
 

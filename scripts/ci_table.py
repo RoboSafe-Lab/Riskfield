@@ -22,9 +22,10 @@ the script prints them first for exactly that check.
 Env:
   RF_SCORES  score-cache npz (required)     RF_LABELS  label npz, PET (required)
   RF_B       bootstrap replicates (10000)   RF_REF     reference method (pora)
-  RF_SEED    0                              RF_DT      0.08
+  RF_SEED    0                              RF_DT      parsed from RF_SCORES filename
 """
 import os
+import re
 import sys
 import time
 
@@ -79,7 +80,13 @@ def band(v):
 def main():
     scores = os.environ["RF_SCORES"]; labels = os.environ["RF_LABELS"]
     B = int(os.environ.get("RF_B", "10000")); REF = os.environ.get("RF_REF", "pora")
-    DT = float(os.environ.get("RF_DT", "0.08"))
+    # Derive DT from the cache filename, which encodes it (eval_conflict.py writes
+    # ..._dt0.0667.npz). Taking it from the env instead lets a caller point at an
+    # AD4CHE cache while leaving RF_DT at 0.08, which would scale every lead time
+    # and its bootstrap interval by 1.2 -- silently, in the table meant to
+    # establish significance. An explicit RF_DT still wins.
+    _m = re.search(r"_dt(\d+(?:\.\d+)?)", os.path.basename(scores))
+    DT = float(os.environ.get("RF_DT", _m.group(1) if _m else "0.08"))
     rng = np.random.default_rng(int(os.environ.get("RF_SEED", "0")))
 
     z = np.load(scores)

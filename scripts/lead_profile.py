@@ -8,9 +8,14 @@ import numpy as np, matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-CFG = [("InD",    "conflict_scores_ind_s20_g48.npz",   "conflict_labels_pet.npz",       0.08),
-       ("AD4CHE", "conflict_scores_ad4che_s5_g48.npz", "conflict_labels_ad4che_pet.npz", 0.0667),
-       ("rounD",  "conflict_scores_round_s2_g48.npz",  "conflict_labels_round_pet.npz",  0.08)]
+# Cache names must track eval_conflict.py's key, which now encodes DT (the frame
+# interval): scores computed under one interval are not interchangeable with
+# another, because DT sets the velocities handed to ttc_score/dsf_score and the
+# lead-time scale. The dt in each row below is also used for the x-axis, so the
+# figure and tab:robust are guaranteed to be built from the same interval.
+CFG = [("InD",    "conflict_scores_ind_s20_g48_dt0.08.npz",     "conflict_labels_pet.npz",        0.08),
+       ("AD4CHE", "conflict_scores_ad4che_s5_g48_dt0.0667.npz", "conflict_labels_ad4che_pet.npz", 0.0667),
+       ("rounD",  "conflict_scores_round_s2_g48_dt0.08.npz",    "conflict_labels_round_pet.npz",  0.08)]
 METH = [("ours_prob", "Ours (prob.)", "#0072B2", "-"),
         ("pora",      "PORA-style",   "#E69F00", "--")]
 XS = np.linspace(-1.6, 1.0, 240)
