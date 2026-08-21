@@ -14,8 +14,14 @@ each one's MAP centroid to the next), then decompose the objective J(A):
 
 plus the per-agent density shift L1 vs. maintain.
 
+The ACCELERATION SWEEP asks how hard the ego must be driven before the neighbour
+densities move at all. Each per-agent P is normalized over the grid, so the L1
+distance lies in [0, 2] and TV = L1/2 is the fraction of probability mass that
+relocates.
+
 Env: RF_CKPT (default serialized/riskflow_ind_6.pt), RF_GRID (40),
-     RF_NLL_SCENES (4000), RF_CF_SCENES (20).
+     RF_NLL_SCENES (4000), RF_CF_SCENES (20),
+     RF_ACC_SWEEP (comma-separated constant accelerations, m/s^2).
 """
 
 import os
@@ -112,8 +118,14 @@ def agent_density(cond_a):
 
 
 names = ("maintain", "brake", "accelerate")
+# Constant ego accelerations to sweep. Comfortable braking ~3 m/s^2, emergency ~8;
+# beyond ~10 the request exceeds tyre friction and is off-distribution.
+ACC_SWEEP = [float(v) for v in os.environ.get(
+    "RF_ACC_SWEEP", "-3,-1.5,1.5,3,-8,8,-15,15,-30,30").split(",")]
 agg = {f"J_{k}_{n}": [] for k in ("full", "dens", "phys") for n in names}
 agg["dL1_brake"] = []
+for _a in ACC_SWEEP:
+    agg[f"sweep_{_a:+.1f}"] = []
 agg["dL1_accel"] = []
 done = 0
 with torch.no_grad():
@@ -199,6 +211,20 @@ with torch.no_grad():
                         for a in neigh])
         dl1a = np.mean([(Pmap["accelerate"][a] - Pmap["maintain"][a]).abs().sum(0).mean().item()
                         for a in neigh])
+        # Same per-agent L1, as a function of how hard the ego is driven. This is
+        # the measurement behind the claim that the learned reaction only moves at
+        # out-of-distribution ego actions.
+        for _acc in ACC_SWEEP:
+            _sp = (sp0 + _acc * t * DT).clamp(min=0.0)
+            _s_seq = m.world_model.forward_scene(agent_emb, car_valid, K, action(_sp))
+            _Y = torch.zeros(1, N, K, 2, device=dev); _Ps = {}
+            for ag in neigh:
+                _cond = m.ar_decoder(agent_emb, _s_seq, _Y, order)
+                _P = agent_density(_cond[0, ag])
+                _Y[0, ag] = (_P.t().unsqueeze(-1) * grid.unsqueeze(0)).sum(1)
+                _Ps[ag] = _P
+            agg[f"sweep_{_acc:+.1f}"].append(np.mean(
+                [(_Ps[a] - Pmap["maintain"][a]).abs().sum(0).mean().item() for a in neigh]))
         agg["dL1_brake"].append(dl1b)
         agg["dL1_accel"].append(dl1a)
         done += 1
@@ -210,6 +236,13 @@ def mn(k):
 
 print(f"RESULT cf_scenes={done}")
 print(f"RESULT density-shift L1  brake={mn('dL1_brake'):.5f}  accel={mn('dL1_accel'):.5f}")
+print("RESULT --- per-agent density-shift L1 vs maintain, by ego acceleration ---")
+print("RESULT    a (m/s^2)      L1       TV   regime")
+for _a in sorted(ACC_SWEEP, key=abs):
+    _v = mn(f"sweep_{_a:+.1f}")
+    _r = ("realistic" if abs(_a) <= 4.0 else
+          "hard but physical" if abs(_a) <= 8.0 else "beyond friction limit (OOD)")
+    print(f"RESULT   {_a:+8.1f}   {_v:7.4f}  {_v/2:7.4f}   {_r}")
 print(f"RESULT J_full  mt={mn('J_full_maintain'):.1f}  br={mn('J_full_brake'):.1f}  ac={mn('J_full_accelerate'):.1f}")
 print(f"RESULT J_dens  mt={mn('J_dens_maintain'):.1f}  br={mn('J_dens_brake'):.1f}  ac={mn('J_dens_accelerate'):.1f}")
 print(f"RESULT J_phys  mt={mn('J_phys_maintain'):.1f}  br={mn('J_phys_brake'):.1f}  ac={mn('J_phys_accelerate'):.1f}")

@@ -73,7 +73,22 @@ m = RiskFlow(
     use_world_model=True, wm_state_dim=c["wm_state_dim"], action_dim=c["action_dim"],
     scene_level=False,                                           # legacy diag on ind_4
 ).to(dev)
-m.load_state_dict(torch.load(ckpt, map_location=dev))
+# ind_4 predates the scene-level encoder modules and the velocity head, which the
+# current RiskFlow always constructs, so a strict load rejects it outright -- this
+# script had stopped running for that reason. Load non-strictly, but verify that
+# every unmatched key belongs to a module this diagnostic does not use: anything
+# structural missing (world_model, flow, map, decoder) would mean the diagnostic
+# is measuring a partly randomly-initialized model.
+_BENIGN = ("encoder.self_attn", "encoder.per_agent_proj", "encoder.ego_identity",
+           "velocity_head")
+_res = m.load_state_dict(torch.load(ckpt, map_location=dev), strict=False)
+_odd = [k for k in list(_res.missing_keys) + list(_res.unexpected_keys)
+        if not k.startswith(_BENIGN)]
+if _odd:
+    raise SystemExit(f"ABORT {ckpt}: unmatched non-benign parameters {_odd[:5]}"
+                     f"{' ...' if len(_odd) > 5 else ''} -- the model and the "
+                     f"checkpoint disagree about which branches exist.")
+print(f"loaded {ckpt} ({len(_res.missing_keys)} unused modules skipped)", flush=True)
 m.eval()
 
 gx = torch.linspace(0.05, 0.95, S)
@@ -126,7 +141,9 @@ with torch.no_grad():
         if torch.isnan(x[:, 0, -2:, :]).any():
             continue
 
-        emb = m.encoder(None, torch.cat([x, feat], dim=-1), vt)
+        # MultiEncoder returns (embedding, car_valid); this diagnostic predates that
+        # change and was passing the tuple straight into the world model.
+        emb, _ = m.encoder(None, torch.cat([x, feat], dim=-1), vt, per_agent=False)
         bx = boundaries_for_location(loc)
         sx = float(bx[0, 1] - bx[0, 0]); sy = float(bx[1, 1] - bx[1, 0])
         scale = torch.tensor([sx, sy], device=dev)
