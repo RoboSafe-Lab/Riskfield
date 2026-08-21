@@ -14,8 +14,14 @@ distance between P_A and P_maintain. If density shifts are ~0, option 2's
 action path is not doing meaningful work; if they are large, but J_dens is
 flat across A, the learned changes are not risk-discriminative.
 
+The ACCELERATION SWEEP answers a separate question: how far outside the realistic
+band must the ego action go before the learned density moves at all? Both P are
+normalized over the grid, so the L1 distance lives in [0, 2] and TV = L1/2 is the
+fraction of probability mass that relocates.
+
 Env: RF_CKPT (default serialized/riskflow_ind_4.pt), RF_GRID (40),
-     RF_N_SCENES (20).
+     RF_N_SCENES (20), RF_ACC_SWEEP (comma-separated constant accelerations,
+     m/s^2, applied over the horizon).
 """
 
 import os
@@ -38,6 +44,11 @@ DT = 0.08
 MASS = 1500.0
 M_R = MASS / 2.0
 A_SCALE = 100.0           # must match training
+# Constant ego accelerations to sweep, m/s^2. Comfortable braking is ~3, emergency
+# ~8; beyond roughly 10 the request exceeds tyre friction and is off-distribution
+# for anything the model saw in training.
+ACC_SWEEP = [float(v) for v in os.environ.get(
+    "RF_ACC_SWEEP", "-3,-1.5,1.5,3,-8,8,-15,15,-30,30").split(",")]
 
 c = default_dict()
 ind = InD(
@@ -101,6 +112,8 @@ agg.update({f"J_dens_{n}": [] for n in names})
 agg.update({f"J_phys_{n}": [] for n in names})
 agg["dL1_brake_vs_maintain"] = []
 agg["dL1_accel_vs_maintain"] = []
+for _a in ACC_SWEEP:
+    agg[f"sweep_{_a:+.1f}"] = []
 done = 0
 with torch.no_grad():
     for batch in site.test_loader:
@@ -152,6 +165,15 @@ with torch.no_grad():
         agg["dL1_accel_vs_maintain"].append(
             (Ps["accelerate"] - Ps["maintain"]).abs().sum(0).mean().item())
 
+        # Same L1, but as a function of how hard the ego is asked to accelerate.
+        # The realistic arms above move the density by ~0; this locates the
+        # magnitude at which the learned action path finally does something.
+        for _acc in ACC_SWEEP:
+            _spv = (sp0 + _acc * t * DT).clamp(min=0.0)
+            _Pa = density_for(emb, action_for(_spv))
+            agg[f"sweep_{_acc:+.1f}"].append(
+                (_Pa - Ps["maintain"]).abs().sum(0).mean().item())
+
         for n in names:
             agg[f"J_full_{n}"].append(J_value(Ps[n], speeds[n], dirv, scale))
             agg[f"J_dens_{n}"].append(J_value(Ps[n], speeds["maintain"], dirv, scale))
@@ -163,6 +185,13 @@ print(f"RESULT ckpt={ckpt} scenes={done} grid={S}x{S} action_scale={A_SCALE}")
 def mean(k): return float(np.mean(agg[k]))
 print(f"RESULT density-shift L1  brake-vs-maintain  = {mean('dL1_brake_vs_maintain'):.5f}")
 print(f"RESULT density-shift L1  accel-vs-maintain  = {mean('dL1_accel_vs_maintain'):.5f}")
+print("RESULT --- density-shift L1 vs maintain, by constant ego acceleration ---")
+print("RESULT    a (m/s^2)      L1       TV   regime")
+for _a in sorted(ACC_SWEEP, key=abs):
+    _v = mean(f"sweep_{_a:+.1f}")
+    _r = ("realistic" if abs(_a) <= 4.0 else
+          "hard but physical" if abs(_a) <= 8.0 else "beyond friction limit (OOD)")
+    print(f"RESULT   {_a:+8.1f}   {_v:7.4f}  {_v/2:7.4f}   {_r}")
 print("RESULT J_full   (density+cost react)  : "
       f"mt={mean('J_full_maintain'):.1f}  br={mean('J_full_brake'):.1f}  ac={mean('J_full_accelerate'):.1f}")
 print("RESULT J_dens   (density only, cost fixed): "
